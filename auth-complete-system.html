@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
-  <title>SOSGOUV – Contrôle Auth</title>
+  <title>SOSGOUV – Auth complète (password + email + Google)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:900px;margin:24px auto;padding:0 16px}
@@ -60,25 +60,34 @@
     const listEl = $("members-list");
 
     const pseudoEmail = (u) => `${u}@sosgouv.local`;
+    const setMsg = (t, ok=false)=>{ msg.textContent = t; msg.className = 'msg ' + (ok?'ok':'err'); };
 
-    function setMsg(t, ok=false){ msg.textContent = t; msg.className = 'msg ' + (ok?'ok':'err'); }
-
-    async function ensureProfile(user, { username, email }) {
+    async function ensureProfileFor(user) {
       if (!user) return;
-      const { data: existing } = await supabase
+      const { data: existing, error: exErr } = await supabase
         .from("profiles").select("id").eq("id", user.id).maybeSingle();
-      if (!existing) {
-        await supabase.from("profiles").insert({
-          id: user.id, username, email: email || null
-        });
-      }
+      if (exErr) { console.error(exErr); return; }
+      if (existing) return;
+
+      const username =
+        (user.user_metadata && (user.user_metadata.full_name || user.user_metadata.name)) ?
+          (user.user_metadata.full_name || user.user_metadata.name).split(" ")[0] :
+        (user.email ? user.email.split("@")[0] : `user_${user.id.slice(0,6)}`);
+
+      const email = user.email ?? null;
+      const { error: insErr } = await supabase.from("profiles").insert({
+        id: user.id, username, email
+      });
+      if (insErr) console.error(insErr);
     }
 
     async function refreshSession() {
       const { data:{ session } } = await supabase.auth.getSession();
       if (session?.user) {
         const u = session.user;
-        let display = u.email || u.user_metadata?.full_name || u.id;
+        await ensureProfileFor(u);
+
+        let display = u.email || (u.user_metadata && (u.user_metadata.full_name || u.user_metadata.name)) || u.id;
         const { data: prof } = await supabase
           .from("profiles").select("username,email").eq("id", u.id).maybeSingle();
         if (prof?.username) display = prof.username;
@@ -102,7 +111,7 @@
       }).join("");
     }
 
-    $("signup-anon").addEventListener("click", async () => {
+    document.getElementById("signup-anon").addEventListener("click", async () => {
       const username = $("username").value.trim();
       const password = $("password").value;
       if (!username || !password) { setMsg("Pseudo & mot de passe requis."); return; }
@@ -110,12 +119,14 @@
       const email = pseudoEmail(username);
       const res = await supabase.auth.signUp({ email, password });
       if (res.error) { setMsg("Erreur création : " + res.error.message); return; }
-      await ensureProfile(res.data.user, { username, email: null });
+      await ensureProfileFor(res.data.user);
+      await supabase.from("profiles").update({ email: null, username }).eq("id", res.data.user.id);
+
       setMsg("Compte (anonyme) créé.", true);
       await refreshSession();
     });
 
-    $("signup-email").addEventListener("click", async () => {
+    document.getElementById("signup-email").addEventListener("click", async () => {
       const username = $("username").value.trim();
       const password = $("password").value;
       const email = $("email").value.trim();
@@ -123,12 +134,14 @@
 
       const res = await supabase.auth.signUp({ email, password });
       if (res.error) { setMsg("Erreur création : " + res.error.message); return; }
-      await ensureProfile(res.data.user, { username, email });
+      await ensureProfileFor(res.data.user);
+      await supabase.from("profiles").update({ username, email }).eq("id", res.data.user.id);
+
       setMsg("Compte (e-mail) créé.", true);
       await refreshSession();
     });
 
-    $("login-password").addEventListener("click", async () => {
+    document.getElementById("login-password").addEventListener("click", async () => {
       const username = $("username").value.trim();
       const password = $("password").value;
       const emailField = $("email").value.trim();
@@ -141,15 +154,18 @@
       await refreshSession();
     });
 
-    $("login-google").addEventListener("click", async () => {
+    document.getElementById("login-google").addEventListener("click", async () => {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo: window.location.href }
+        options: {
+          redirectTo: window.location.href,
+          queryParams: { prompt: "select_account" }
+        }
       });
       if (error) setMsg("Erreur Google OAuth : " + error.message);
     });
 
-    $("logout").addEventListener("click", async () => {
+    document.getElementById("logout").addEventListener("click", async () => {
       await supabase.auth.signOut();
       setMsg("Déconnecté.", true);
       await refreshSession();
