@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
-  <title>SOSGOUV – Auth complète (password + email + Google)</title>
+  <title>SOSGOUV – Auth complète (logout robuste)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:900px;margin:24px auto;padding:0 16px}
@@ -34,6 +34,7 @@
       <button id="login-password">Se connecter (mot de passe)</button>
       <button id="login-google">Se connecter avec Google</button>
       <button id="logout">Se déconnecter</button>
+      <button id="hard-reset">Reset local (si bloqué)</button>
     </div>
     <div id="auth-msg" class="msg"></div>
     <div id="session" class="msg muted"></div>
@@ -49,10 +50,7 @@
   <script type="module">
     import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-    const supabase = createClient(
-      "https://uwevblhmiphktgamhnik.supabase.co",
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV3ZXZibGhtaXBoa3RnYW1obmlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2MDM4MjQsImV4cCI6MjA3NjE3OTgyNH0.4SkvVKy7bcRDsMffOuYbkM2oYtHdBbsMx2KOu4G4MJo"
-    );
+    const supabase = createClient("https://uwevblhmiphktgamhnik.supabase.co", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV3ZXZibGhtaXBoa3RnYW1obmlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2MDM4MjQsImV4cCI6MjA3NjE3OTgyNH0.4SkvVKy7bcRDsMffOuYbkM2oYtHdBbsMx2KOu4G4MJo");
 
     const $ = id => document.getElementById(id);
     const msg = $("auth-msg");
@@ -64,21 +62,15 @@
 
     async function ensureProfileFor(user) {
       if (!user) return;
-      const { data: existing, error: exErr } = await supabase
+      const { data: existing } = await supabase
         .from("profiles").select("id").eq("id", user.id).maybeSingle();
-      if (exErr) { console.error(exErr); return; }
       if (existing) return;
-
       const username =
         (user.user_metadata && (user.user_metadata.full_name || user.user_metadata.name)) ?
           (user.user_metadata.full_name || user.user_metadata.name).split(" ")[0] :
         (user.email ? user.email.split("@")[0] : `user_${user.id.slice(0,6)}`);
-
       const email = user.email ?? null;
-      const { error: insErr } = await supabase.from("profiles").insert({
-        id: user.id, username, email
-      });
-      if (insErr) console.error(insErr);
+      await supabase.from("profiles").insert({ id: user.id, username, email });
     }
 
     async function refreshSession() {
@@ -86,7 +78,6 @@
       if (session?.user) {
         const u = session.user;
         await ensureProfileFor(u);
-
         let display = u.email || (u.user_metadata && (u.user_metadata.full_name || u.user_metadata.name)) || u.id;
         const { data: prof } = await supabase
           .from("profiles").select("username,email").eq("id", u.id).maybeSingle();
@@ -111,42 +102,37 @@
       }).join("");
     }
 
-    document.getElementById("signup-anon").addEventListener("click", async () => {
+    $("signup-anon").addEventListener("click", async () => {
       const username = $("username").value.trim();
       const password = $("password").value;
       if (!username || !password) { setMsg("Pseudo & mot de passe requis."); return; }
-
       const email = pseudoEmail(username);
       const res = await supabase.auth.signUp({ email, password });
       if (res.error) { setMsg("Erreur création : " + res.error.message); return; }
       await ensureProfileFor(res.data.user);
       await supabase.from("profiles").update({ email: null, username }).eq("id", res.data.user.id);
-
       setMsg("Compte (anonyme) créé.", true);
       await refreshSession();
     });
 
-    document.getElementById("signup-email").addEventListener("click", async () => {
+    $("signup-email").addEventListener("click", async () => {
       const username = $("username").value.trim();
       const password = $("password").value;
       const email = $("email").value.trim();
       if (!username || !password || !email) { setMsg("Pseudo, mot de passe et e-mail requis."); return; }
-
       const res = await supabase.auth.signUp({ email, password });
       if (res.error) { setMsg("Erreur création : " + res.error.message); return; }
       await ensureProfileFor(res.data.user);
       await supabase.from("profiles").update({ username, email }).eq("id", res.data.user.id);
-
       setMsg("Compte (e-mail) créé.", true);
       await refreshSession();
     });
 
-    document.getElementById("login-password").addEventListener("click", async () => {
+    $("login-password").addEventListener("click", async () => {
       const username = $("username").value.trim();
       const password = $("password").value;
       const emailField = $("email").value.trim();
       if (!username || !password) { setMsg("Pseudo & mot de passe requis."); return; }
-
       const email = emailField || pseudoEmail(username);
       const res = await supabase.auth.signInWithPassword({ email, password });
       if (res.error) { setMsg("Erreur connexion : " + res.error.message); return; }
@@ -154,7 +140,7 @@
       await refreshSession();
     });
 
-    document.getElementById("login-google").addEventListener("click", async () => {
+    $("login-google").addEventListener("click", async () => {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -165,10 +151,22 @@
       if (error) setMsg("Erreur Google OAuth : " + error.message);
     });
 
-    document.getElementById("logout").addEventListener("click", async () => {
-      await supabase.auth.signOut();
-      setMsg("Déconnecté.", true);
+    // --- Déconnexion robuste ---
+    $("logout").addEventListener("click", async () => {
+      const { error } = await supabase.auth.signOut({ scope: "global" }); // global = toutes les tabs
+      if (error) { setMsg("Erreur déconnexion : " + error.message); }
       await refreshSession();
+    });
+
+    // --- Hard reset : si jamais le token local est coincé (rare) ---
+    $("hard-reset").addEventListener("click", () => {
+      try {
+        localStorage.removeItem("sb-uwevblhmiphktgamhnik-auth-token");
+        setMsg("Token local supprimé. Rechargement…", true);
+        setTimeout(() => location.reload(), 300);
+      } catch(e) {
+        setMsg("Impossible d'effacer le token local : " + e.message);
+      }
     });
 
     supabase.auth.onAuthStateChange(() => refreshSession());
